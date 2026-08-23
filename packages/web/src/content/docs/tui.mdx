@@ -401,9 +401,29 @@ This is separate from `opencode.json`, which configures server/runtime behavior.
 - `diff_style` - Controls diff rendering. `"auto"` adapts to terminal width, `"stacked"` always shows a single-column layout.
 - `cursor` - Controls the terminal cursor in TUI input fields. `style` defaults to `"block"`, can be `"underline"`, `"line"`, or `"default"`; `blinking` defaults to `true`. When `style` is `"default"`, the terminal default cursor is restored, so `blinking` has no effect.
 - `mouse` - Enable or disable mouse capture in the TUI (default: `true`). When disabled, the terminal's native mouse selection/scrolling behavior is preserved.
+- `vim` - Enable vim modal editing in the prompt editor, with relative line numbers. Defaults to `false`.
 - `attention` - Configures TUI desktop notifications and sounds. Disabled by default.
 
 Use `OPENCODE_TUI_CONFIG` to load a custom TUI config path.
+
+### Vim mode
+
+Enable modal editing in the prompt with `vim`:
+
+```json title="tui.json"
+{
+  "vim": true
+}
+```
+
+The prompt starts in insert mode (normal typing) and supports the usual vim grammar: press `escape` for normal mode, `v`/`V` for visual modes, and combine operators (`d`, `c`, `y`) with motions (`w`, `b`, `e`, `0`, `$`, `f{char}`, `gg`, `G`, ...). Counts work as prefixes (`3j`, `d2w`), and the prompt gutter shows relative line numbers with the absolute number on the cursor line.
+
+Notes:
+
+- `return` still submits and arrow keys keep their existing bindings; use `hjkl` for movement.
+- Insert mode keeps the standard emacs-style shortcuts (`ctrl+a`, `ctrl+e`, `ctrl+k`, `ctrl+w`, ...).
+- Not supported: macros, marks, ex commands (`:`), window/scroll commands, and visual block mode.
+- The relative-line-number gutter is only rendered while `vim` is enabled.
 
 ### Attention
 

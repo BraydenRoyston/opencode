@@ -15,6 +15,10 @@ export const AttentionSoundName = Schema.Literals([
 ])
 export type AttentionSoundName = Schema.Schema.Type<typeof AttentionSoundName>
 
+export const VimMode = Schema.Boolean.annotate({
+  description: "Enable vim modal editing and relative line numbers in the prompt editor",
+})
+
 export const PluginOptions = Schema.Record(Schema.String, Schema.Unknown)
 export const PluginSpec = Schema.Union([Schema.String, Schema.mutable(Schema.Tuple([Schema.String, PluginOptions]))])
 
@@ -71,11 +75,12 @@ export const Info = Schema.Struct({
   scroll_acceleration: Schema.optional(ScrollAcceleration),
   diff_style: Schema.optional(DiffStyle),
   cursor: Schema.optional(Cursor),
+  vim: Schema.optional(VimMode),
   mouse: Schema.optional(Schema.Boolean).annotate({ description: "Enable or disable mouse capture (default: true)" }),
 })
 export type Info = Schema.Schema.Type<typeof Info>
 
-export type Resolved = Omit<Info, "attention" | "keybinds" | "leader_timeout" | "mouse" | "cursor"> & {
+export type Resolved = Omit<Info, "attention" | "keybinds" | "leader_timeout" | "mouse" | "cursor" | "vim"> & {
   attention: {
     enabled: boolean
     notifications: boolean
@@ -87,6 +92,7 @@ export type Resolved = Omit<Info, "attention" | "keybinds" | "leader_timeout" | 
   keybinds: TuiKeybind.BindingLookupView
   leader_timeout: number
   mouse: boolean
+  vim: boolean
   cursor?: {
     style: "block" | "underline" | "line" | "default"
     blinking: boolean
@@ -126,6 +132,7 @@ export function resolve(input: Info, options: ResolveOptions): Resolved {
     }),
     leader_timeout: input.leader_timeout ?? LeaderTimeoutDefault,
     mouse: input.mouse ?? true,
+    vim: input.vim ?? false,
     cursor: input.cursor
       ? {
           style: input.cursor.style ?? "block",
