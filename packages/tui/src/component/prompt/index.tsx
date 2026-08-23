@@ -6,6 +6,7 @@ import {
   PasteEvent,
   decodePasteBytes,
   type KeyEvent,
+  type LineNumberRenderable,
   type Renderable,
 } from "@opentui/core"
 import type { CommandContext } from "@opentui/keymap"
@@ -52,6 +53,7 @@ import { DialogSkill } from "../dialog-skill"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
+import { createPromptVim, type VimMode } from "../../prompt/vim"
 import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
@@ -297,6 +299,95 @@ export function Prompt(props: PromptProps) {
     extmarkToPartIndex: new Map(),
     interrupt: 0,
   })
+
+  // Toggleable at runtime via ctrl+g; `vim` config is the initial default and
+  // the choice persists across prompts and restarts once toggled.
+  const [vimEnabled, setVimEnabled] = createSignal(kv.get("vim_enabled", tuiConfig.vim))
+  const [vimMode, setVimMode] = createSignal<VimMode>("insert")
+  const vim = createPromptVim({
+    editor: () => (input && !input.isDestroyed ? input : undefined),
+    onModeChange: setVimMode,
+  })
+
+  function toggleVim() {
+    const next = !vimEnabled()
+    setVimEnabled(next)
+    kv.set("vim_enabled", next)
+    if (next) vim.escape()
+    else vim.hardReset()
+    setVimMode(vim.mode)
+  }
+
+  // Every printable stroke is bound so nothing leaks into the buffer in
+  // normal/visual mode; the controller swallows unmapped keys (vim bell).
+  // Multi-stroke semantics resolve inside the controller, so each binding is a
+  // single stroke. Uppercase letters need the explicit shift+ form because a
+  // bare "A" compiles case-insensitively and would shadow "a". Shifted symbols
+  // are registered both bare and with shift+ since terminals disagree on
+  // whether shifted punctuation reports the shift modifier.
+  const vimSeeds: { key: string; char: string }[] = []
+  for (const ch of "abcdefghijklmnopqrstuvwxyz") {
+    vimSeeds.push({ key: ch, char: ch })
+    vimSeeds.push({ key: `shift+${ch}`, char: ch.toUpperCase() })
+  }
+  for (const ch of "0123456789") vimSeeds.push({ key: ch, char: ch })
+  for (const ch of "`~!@#$%^&*()-_=+[]{}\\|;:'\",.<>/?") {
+    vimSeeds.push({ key: ch, char: ch })
+    if ('~!@#$%^&*()_+{}|:"<>?'.includes(ch)) vimSeeds.push({ key: `shift+${ch}`, char: ch })
+  }
+  vimSeeds.push({ key: "space", char: " " })
+
+  const VIM_DESCS: Record<string, string> = {
+    h: "Vim: cursor left",
+    j: "Vim: cursor down",
+    k: "Vim: cursor up",
+    l: "Vim: cursor right",
+    w: "Vim: next word",
+    W: "Vim: next WORD",
+    b: "Vim: previous word",
+    B: "Vim: previous WORD",
+    e: "Vim: end of word",
+    E: "Vim: end of WORD",
+    "0": "Vim: line start",
+    $: "Vim: line end",
+    "^": "Vim: first non-blank",
+    G: "Vim: last line / goto line",
+    "%": "Vim: matching bracket",
+    "{": "Vim: previous paragraph",
+    "}": "Vim: next paragraph",
+    ";": "Vim: repeat find",
+    ",": "Vim: repeat find reversed",
+    f: "Vim: find char forward",
+    F: "Vim: find char backward",
+    t: "Vim: till char forward",
+    T: "Vim: till char backward",
+    g: "Vim: gg prefix",
+    d: "Vim: delete operator",
+    c: "Vim: change operator",
+    y: "Vim: yank operator",
+    r: "Vim: replace char",
+    x: "Vim: delete char under cursor",
+    X: "Vim: delete char before cursor",
+    s: "Vim: substitute char",
+    S: "Vim: substitute line",
+    D: "Vim: delete to line end",
+    C: "Vim: change to line end",
+    J: "Vim: join lines",
+    "~": "Vim: toggle case",
+    u: "Vim: undo",
+    p: "Vim: paste after",
+    P: "Vim: paste before",
+    o: "Vim: open line below",
+    O: "Vim: open line above",
+    i: "Vim: insert",
+    I: "Vim: insert at line start",
+    a: "Vim: append",
+    A: "Vim: append at line end",
+    v: "Vim: visual mode",
+    V: "Vim: visual line mode",
+    ".": "Vim: repeat last change",
+    "ctrl+r": "Vim: redo",
+  }
 
   createEffect(
     on(
@@ -559,6 +650,28 @@ export function Prompt(props: PromptProps) {
     })),
   )
 
+  // Escape handling for vim mode. Registered before the other prompt layers
+  // so autocomplete, shell exit, and session interrupt keep precedence: this
+  // only sees escape once they decline it.
+  useBindings(() => ({
+    target: inputTarget,
+    enabled:
+      vimEnabled() &&
+      inputTarget() !== undefined &&
+      !props.disabled &&
+      dialog.stack.length === 0 &&
+      store.mode !== "shell" &&
+      !auto()?.visible,
+    bindings: [
+      {
+        key: "escape",
+        desc: "Vim: back to normal mode",
+        group: "Vim",
+        cmd: () => (vim.escape() ? undefined : false),
+      },
+    ],
+  }))
+
   useBindings(() => ({
     commands: promptCommands(),
   }))
@@ -597,10 +710,12 @@ export function Prompt(props: PromptProps) {
       setStore("prompt", prompt)
       restoreExtmarksFromParts(prompt.parts)
       input.gotoBufferEnd()
+      vim.softReset()
     },
     reset() {
       input.clear()
       input.extmarks.clear()
+      vim.hardReset()
       setStore("prompt", {
         input: "",
         parts: [],
@@ -848,6 +963,25 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  // ctrl+g toggles vim mode. Priority 1 so it wins over other prompt layers
+  // while the textarea is focused (messages.first binds ctrl+g elsewhere but
+  // only when no editor has focus).
+  useBindings(() => {
+    return {
+      target: inputTarget,
+      enabled: inputTarget() !== undefined && !props.disabled && store.mode !== "shell" && !auto()?.visible,
+      priority: 1,
+      bindings: [
+        {
+          key: "ctrl+g",
+          desc: vimEnabled() ? "Vim: disable modal editing" : "Vim: enable modal editing",
+          group: "Vim",
+          cmd: toggleVim,
+        },
+      ],
+    }
+  })
+
   useBindings(() => {
     return {
       target: inputTarget,
@@ -884,6 +1018,7 @@ export function Prompt(props: PromptProps) {
             setStore("mode", item.mode ?? "normal")
             restoreExtmarksFromParts(item.parts)
             input.cursorOffset = 0
+            vim.softReset()
           },
         },
       ],
@@ -920,12 +1055,80 @@ export function Prompt(props: PromptProps) {
             setStore("mode", item.mode ?? "normal")
             restoreExtmarksFromParts(item.parts)
             input.cursorOffset = input.plainText.length
+            vim.softReset()
           },
         },
       ],
       bindings: tuiConfig.keybinds.get("prompt.history.next"),
     }
   })
+
+  // Main vim layer: consumes printable keys in normal/visual modes. Insert
+  // mode leaves everything to the standard managed textarea bindings.
+  // Enter submits from normal/visual; newline insertion belongs to insert
+  // mode (i, a, o, ...) or shift+return / ctrl+j anywhere.
+  useBindings(() => ({
+    target: inputTarget,
+    enabled:
+      vimEnabled() &&
+      inputTarget() !== undefined &&
+      !props.disabled &&
+      dialog.stack.length === 0 &&
+      store.mode !== "shell" &&
+      !auto()?.visible &&
+      vimMode() !== "insert",
+    bindings: [
+      ...vimSeeds.map(({ key, char }) => ({
+        key,
+        ...(VIM_DESCS[char] ? { desc: VIM_DESCS[char] } : {}),
+        group: "Vim",
+        cmd: () => (vim.key(char) ? undefined : false),
+      })),
+      {
+        key: "ctrl+r",
+        desc: VIM_DESCS["ctrl+r"],
+        group: "Vim",
+        cmd: () => (vim.redo() ? undefined : false),
+      },
+      {
+        key: "return",
+        desc: "Submit prompt",
+        group: "Prompt",
+        cmd: () => {
+          void submit()
+          return undefined
+        },
+      },
+    ],
+  }))
+
+  // Insert mode with vim enabled treats return as a plain newline so multi-line
+  // prompts can be typed without submitting; priority 1 beats the managed
+  // textarea layer's input.submit binding on return.
+  useBindings(() => ({
+    target: inputTarget,
+    enabled:
+      vimEnabled() &&
+      inputTarget() !== undefined &&
+      !props.disabled &&
+      dialog.stack.length === 0 &&
+      store.mode !== "shell" &&
+      !auto()?.visible &&
+      vimMode() === "insert",
+    priority: 1,
+    bindings: [
+      {
+        key: "return",
+        desc: "Insert newline",
+        group: "Vim",
+        cmd: () => {
+          if (!input || input.isDestroyed) return false
+          input.insertText("\n")
+          return undefined
+        },
+      },
+    ],
+  }))
 
   let submitting = false
   async function submit() {
@@ -1142,6 +1345,7 @@ export function Prompt(props: PromptProps) {
       }, 50)
     }
     input.clear()
+    vim.hardReset()
     if (finishMoveProgress) move.finishSubmit()
     return true
   }
@@ -1278,6 +1482,7 @@ export function Prompt(props: PromptProps) {
     }
     input.clear()
     input.extmarks.clear()
+    vim.hardReset()
     setStore("prompt", {
       input: "",
       parts: [],
@@ -1345,6 +1550,114 @@ export function Prompt(props: PromptProps) {
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))
   const moveLabelWidth = createMemo(() => Math.max(12, Math.min(44, dimensions().width - 48)))
 
+  const [gutter, setGutter] = createSignal<LineNumberRenderable>()
+
+  // Relative line numbers for vim mode: distance from the cursor line, with
+  // the cursor line showing its absolute number (hybrid numbering). Keyed by
+  // logical line; LineNumberRenderable maps those onto wrapped visual rows.
+  createEffect(() => {
+    const target = gutter()
+    const area = inputTarget()
+    if (!vimEnabled() || !target || !area || area.isDestroyed) return
+    cursorVersion()
+    const totalLines = area.lineCount
+    const cursorLine = area.logicalCursor.row
+    const numbers = new Map<number, number>()
+    for (let line = 0; line < totalLines; line++) {
+      numbers.set(line, Math.abs(line - cursorLine))
+    }
+    numbers.set(cursorLine, cursorLine + 1)
+    target.setLineNumbers(numbers)
+  })
+
+  // Block cursor in normal/visual modes, user-configured cursor in insert.
+  createEffect(() => {
+    const area = inputTarget()
+    if (!vimEnabled() || !area || area.isDestroyed) return
+    if (vimMode() === "insert") {
+      if (tuiConfig.cursor) area.cursorStyle = tuiConfig.cursor
+      return
+    }
+    area.cursorStyle = { style: "block", blinking: false }
+  })
+
+  const editorNode = (
+    <textarea
+      width="100%"
+      placeholder={placeholderText()}
+      placeholderColor={theme.textMuted}
+      textColor={leader() ? theme.textMuted : theme.text}
+      focusedTextColor={leader() ? theme.textMuted : theme.text}
+      minHeight={1}
+      maxHeight={maxHeight()}
+      onContentChange={() => {
+        const value = input.plainText
+        setStore("prompt", "input", value)
+        auto()?.onInput(value)
+        syncExtmarksWithPromptParts()
+        setCursorVersion((value) => value + 1)
+      }}
+      onCursorChange={() => setCursorVersion((value) => value + 1)}
+      onKeyDown={(key: KeyEvent) => {
+        if (props.disabled) {
+          key.preventDefault()
+        }
+      }}
+      onSubmit={() => {
+        // IME: double-defer so the last composed character (e.g. Korean
+        // hangul) is flushed to plainText before we read it for submission.
+        setTimeout(() => setTimeout(() => submit(), 0), 0)
+      }}
+      onPaste={async (event: PasteEvent) => {
+        if (props.disabled) {
+          event.preventDefault()
+          return
+        }
+
+        // Normalize line endings at the boundary
+        // Windows ConPTY/Terminal often sends CR-only newlines in bracketed paste
+        // Replace CRLF first, then any remaining CR
+        const normalizedText = decodePasteBytes(event.bytes).replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+        const pastedContent = normalizedText.trim()
+
+        // Windows Terminal <1.25 can surface image-only clipboard as an
+        // empty bracketed paste. Windows Terminal 1.25+ does not.
+        if (!pastedContent) {
+          keymap.dispatchCommand("prompt.paste")
+          return
+        }
+
+        // Once we cross an async boundary below, the terminal may perform its
+        // default paste unless we suppress it first and handle insertion ourselves.
+        event.preventDefault()
+
+        await pasteInputText(normalizedText)
+      }}
+      ref={(r: TextareaRenderable) => {
+        input = r
+        Object.assign(r, {
+          getClipboardText: (text: string) => expandPastedTextPlaceholders(text, store.prompt.parts),
+        })
+        setInputTarget(r)
+        if (promptPartTypeId === 0) {
+          promptPartTypeId = input.extmarks.registerType("prompt-part")
+        }
+        props.ref?.(ref)
+        setTimeout(() => {
+          // setTimeout is a workaround and needs to be addressed properly
+          if (!input || input.isDestroyed) return
+          input.cursorColor = theme.text
+          if (tuiConfig.cursor) input.cursorStyle = tuiConfig.cursor
+        }, 0)
+      }}
+      onMouseDown={(r: MouseEvent) => r.target?.focus()}
+      focusedBackgroundColor={theme.backgroundElement}
+      cursorColor={props.disabled ? theme.backgroundElement : theme.text}
+      cursorStyle={tuiConfig.cursor}
+      syntaxStyle={syntax()}
+    />
+  )
+
   return (
     <>
       <box ref={(r: BoxRenderable) => (anchor = r)} visible={props.visible !== false} width="100%">
@@ -1366,83 +1679,26 @@ export function Prompt(props: PromptProps) {
             flexGrow={1}
             width="100%"
           >
-            <textarea
-              width="100%"
-              placeholder={placeholderText()}
-              placeholderColor={theme.textMuted}
-              textColor={leader() ? theme.textMuted : theme.text}
-              focusedTextColor={leader() ? theme.textMuted : theme.text}
-              minHeight={1}
-              maxHeight={maxHeight()}
-              onContentChange={() => {
-                const value = input.plainText
-                setStore("prompt", "input", value)
-                auto()?.onInput(value)
-                syncExtmarksWithPromptParts()
-                setCursorVersion((value) => value + 1)
-              }}
-              onCursorChange={() => setCursorVersion((value) => value + 1)}
-              onKeyDown={(e: { preventDefault(): void }) => {
-                if (props.disabled) {
-                  e.preventDefault()
-                  return
-                }
-              }}
-              onSubmit={() => {
-                // IME: double-defer so the last composed character (e.g. Korean
-                // hangul) is flushed to plainText before we read it for submission.
-                setTimeout(() => setTimeout(() => submit(), 0), 0)
-              }}
-              onPaste={async (event: PasteEvent) => {
-                if (props.disabled) {
-                  event.preventDefault()
-                  return
-                }
-
-                // Normalize line endings at the boundary
-                // Windows ConPTY/Terminal often sends CR-only newlines in bracketed paste
-                // Replace CRLF first, then any remaining CR
-                const normalizedText = decodePasteBytes(event.bytes).replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-                const pastedContent = normalizedText.trim()
-
-                // Windows Terminal <1.25 can surface image-only clipboard as an
-                // empty bracketed paste. Windows Terminal 1.25+ does not.
-                if (!pastedContent) {
-                  keymap.dispatchCommand("prompt.paste")
-                  return
-                }
-
-                // Once we cross an async boundary below, the terminal may perform its
-                // default paste unless we suppress it first and handle insertion ourselves.
-                event.preventDefault()
-
-                await pasteInputText(normalizedText)
-              }}
-              ref={(r: TextareaRenderable) => {
-                input = r
-                Object.assign(r, {
-                  getClipboardText: (text: string) => expandPastedTextPlaceholders(text, store.prompt.parts),
-                })
-                setInputTarget(r)
-                if (promptPartTypeId === 0) {
-                  promptPartTypeId = input.extmarks.registerType("prompt-part")
-                }
-                props.ref?.(ref)
-                setTimeout(() => {
-                  // setTimeout is a workaround and needs to be addressed properly
-                  if (!input || input.isDestroyed) return
-                  input.cursorColor = theme.text
-                  if (tuiConfig.cursor) input.cursorStyle = tuiConfig.cursor
-                }, 0)
-              }}
-              onMouseDown={(r: MouseEvent) => r.target?.focus()}
-              focusedBackgroundColor={theme.backgroundElement}
-              cursorColor={props.disabled ? theme.backgroundElement : theme.text}
-              cursorStyle={tuiConfig.cursor}
-              syntaxStyle={syntax()}
-            />
+            <line_number
+              ref={(r: LineNumberRenderable) => setGutter(r)}
+              fg={theme.textMuted}
+              minWidth={2}
+              paddingRight={1}
+              showLineNumbers={vimEnabled()}
+            >
+              {editorNode}
+            </line_number>
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
               <box flexDirection="row" gap={1}>
+                <Show when={vimEnabled() && vimMode() !== "insert"}>
+                  <text fg={vimMode() === "normal" ? theme.textMuted : theme.primary}>
+                    {vimMode() === "visual"
+                      ? "-- VISUAL --"
+                      : vimMode() === "visual-line"
+                        ? "-- V-LINE --"
+                        : "-- NORMAL --"}
+                  </text>
+                </Show>
                 <Show when={local.agent.current()} fallback={<box height={1} />}>
                   {(agent) => (
                     <>
