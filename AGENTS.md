@@ -148,6 +148,11 @@ const table = sqliteTable("session", {
 
 - Always run `bun typecheck` from package directories (e.g., `packages/opencode`), never `tsc` directly.
 
+## Dev Channels (this machine)
+
+- This checkout is the **dev** channel; the user's work instance runs from `~/repos/opencode-stable` via the `opencode` command. Test changes with `opencode-dev`, never `opencode`.
+- Promote to the work instance only via `opencode-update` after changes are merged to `origin/dev`. See `.opencode/skills/dev-channels/SKILL.md`.
+
 ## V2 Session Core
 
 - Keep durable prompt admission separate from model execution. `SessionV2.prompt(...)` admits one durable `session_input` row before scheduling advisory `SessionExecution.wake(sessionID)` unless `resume: false` requests admit-only behavior. The serialized runner promotes admitted inputs into visible user messages at safe boundaries.
