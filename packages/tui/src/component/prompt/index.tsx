@@ -53,7 +53,7 @@ import { DialogSkill } from "../dialog-skill"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
-import { createPromptVim, type VimMode } from "../../prompt/vim"
+import { registerVimBindings } from "../../prompt/vim-bindings"
 import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
@@ -302,92 +302,21 @@ export function Prompt(props: PromptProps) {
 
   // Toggleable at runtime via ctrl+g; `vim` config is the initial default and
   // the choice persists across prompts and restarts once toggled.
-  const [vimEnabled, setVimEnabled] = createSignal(kv.get("vim_enabled", tuiConfig.vim))
-  const [vimMode, setVimMode] = createSignal<VimMode>("insert")
-  const vim = createPromptVim({
-    editor: () => (input && !input.isDestroyed ? input : undefined),
-    onModeChange: setVimMode,
+  const {
+    vim,
+    vimEnabled,
+    vimMode,
+  } = registerVimBindings({
+    target: inputTarget,
+    guard: () => dialog.stack.length === 0 && store.mode !== "shell" && !auto()?.visible,
+    disabled: () => props.disabled ?? false,
+    initialEnabled: kv.get("vim_enabled", tuiConfig.vim),
+    onToggle: (next) => kv.set("vim_enabled", next),
+    cursor: tuiConfig.cursor,
+    onSubmit: () => {
+      void submit()
+    },
   })
-
-  function toggleVim() {
-    const next = !vimEnabled()
-    setVimEnabled(next)
-    kv.set("vim_enabled", next)
-    if (next) vim.escape()
-    else vim.hardReset()
-    setVimMode(vim.mode)
-  }
-
-  // Every printable stroke is bound so nothing leaks into the buffer in
-  // normal/visual mode; the controller swallows unmapped keys (vim bell).
-  // Multi-stroke semantics resolve inside the controller, so each binding is a
-  // single stroke. Uppercase letters need the explicit shift+ form because a
-  // bare "A" compiles case-insensitively and would shadow "a". Shifted symbols
-  // are registered both bare and with shift+ since terminals disagree on
-  // whether shifted punctuation reports the shift modifier.
-  const vimSeeds: { key: string; char: string }[] = []
-  for (const ch of "abcdefghijklmnopqrstuvwxyz") {
-    vimSeeds.push({ key: ch, char: ch })
-    vimSeeds.push({ key: `shift+${ch}`, char: ch.toUpperCase() })
-  }
-  for (const ch of "0123456789") vimSeeds.push({ key: ch, char: ch })
-  for (const ch of "`~!@#$%^&*()-_=+[]{}\\|;:'\",.<>/?") {
-    vimSeeds.push({ key: ch, char: ch })
-    if ('~!@#$%^&*()_+{}|:"<>?'.includes(ch)) vimSeeds.push({ key: `shift+${ch}`, char: ch })
-  }
-  vimSeeds.push({ key: "space", char: " " })
-
-  const VIM_DESCS: Record<string, string> = {
-    h: "Vim: cursor left",
-    j: "Vim: cursor down",
-    k: "Vim: cursor up",
-    l: "Vim: cursor right",
-    w: "Vim: next word",
-    W: "Vim: next WORD",
-    b: "Vim: previous word",
-    B: "Vim: previous WORD",
-    e: "Vim: end of word",
-    E: "Vim: end of WORD",
-    "0": "Vim: line start",
-    $: "Vim: line end",
-    "^": "Vim: first non-blank",
-    G: "Vim: last line / goto line",
-    "%": "Vim: matching bracket",
-    "{": "Vim: previous paragraph",
-    "}": "Vim: next paragraph",
-    ";": "Vim: repeat find",
-    ",": "Vim: repeat find reversed",
-    f: "Vim: find char forward",
-    F: "Vim: find char backward",
-    t: "Vim: till char forward",
-    T: "Vim: till char backward",
-    g: "Vim: gg prefix",
-    d: "Vim: delete operator",
-    c: "Vim: change operator",
-    y: "Vim: yank operator",
-    r: "Vim: replace char",
-    x: "Vim: delete char under cursor",
-    X: "Vim: delete char before cursor",
-    s: "Vim: substitute char",
-    S: "Vim: substitute line",
-    D: "Vim: delete to line end",
-    C: "Vim: change to line end",
-    J: "Vim: join lines",
-    "~": "Vim: toggle case",
-    u: "Vim: undo",
-    p: "Vim: paste after",
-    P: "Vim: paste before",
-    o: "Vim: open line below",
-    O: "Vim: open line above",
-    i: "Vim: insert",
-    I: "Vim: insert at line start",
-    a: "Vim: append",
-    A: "Vim: append at line end",
-    v: "Vim: visual mode",
-    V: "Vim: visual line mode",
-    ".": "Vim: repeat last change",
-    "ctrl+r": "Vim: redo",
-  }
 
   createEffect(
     on(
@@ -649,28 +578,6 @@ export function Prompt(props: PromptProps) {
       ...entry,
     })),
   )
-
-  // Escape handling for vim mode. Registered before the other prompt layers
-  // so autocomplete, shell exit, and session interrupt keep precedence: this
-  // only sees escape once they decline it.
-  useBindings(() => ({
-    target: inputTarget,
-    enabled:
-      vimEnabled() &&
-      inputTarget() !== undefined &&
-      !props.disabled &&
-      dialog.stack.length === 0 &&
-      store.mode !== "shell" &&
-      !auto()?.visible,
-    bindings: [
-      {
-        key: "escape",
-        desc: "Vim: back to normal mode",
-        group: "Vim",
-        cmd: () => (vim.escape() ? undefined : false),
-      },
-    ],
-  }))
 
   useBindings(() => ({
     commands: promptCommands(),
@@ -963,25 +870,6 @@ export function Prompt(props: PromptProps) {
     }
   })
 
-  // ctrl+g toggles vim mode. Priority 1 so it wins over other prompt layers
-  // while the textarea is focused (messages.first binds ctrl+g elsewhere but
-  // only when no editor has focus).
-  useBindings(() => {
-    return {
-      target: inputTarget,
-      enabled: inputTarget() !== undefined && !props.disabled && store.mode !== "shell" && !auto()?.visible,
-      priority: 1,
-      bindings: [
-        {
-          key: "ctrl+g",
-          desc: vimEnabled() ? "Vim: disable modal editing" : "Vim: enable modal editing",
-          group: "Vim",
-          cmd: toggleVim,
-        },
-      ],
-    }
-  })
-
   useBindings(() => {
     return {
       target: inputTarget,
@@ -1062,73 +950,6 @@ export function Prompt(props: PromptProps) {
       bindings: tuiConfig.keybinds.get("prompt.history.next"),
     }
   })
-
-  // Main vim layer: consumes printable keys in normal/visual modes. Insert
-  // mode leaves everything to the standard managed textarea bindings.
-  // Enter submits from normal/visual; newline insertion belongs to insert
-  // mode (i, a, o, ...) or shift+return / ctrl+j anywhere.
-  useBindings(() => ({
-    target: inputTarget,
-    enabled:
-      vimEnabled() &&
-      inputTarget() !== undefined &&
-      !props.disabled &&
-      dialog.stack.length === 0 &&
-      store.mode !== "shell" &&
-      !auto()?.visible &&
-      vimMode() !== "insert",
-    bindings: [
-      ...vimSeeds.map(({ key, char }) => ({
-        key,
-        ...(VIM_DESCS[char] ? { desc: VIM_DESCS[char] } : {}),
-        group: "Vim",
-        cmd: () => (vim.key(char) ? undefined : false),
-      })),
-      {
-        key: "ctrl+r",
-        desc: VIM_DESCS["ctrl+r"],
-        group: "Vim",
-        cmd: () => (vim.redo() ? undefined : false),
-      },
-      {
-        key: "return",
-        desc: "Submit prompt",
-        group: "Prompt",
-        cmd: () => {
-          void submit()
-          return undefined
-        },
-      },
-    ],
-  }))
-
-  // Insert mode with vim enabled treats return as a plain newline so multi-line
-  // prompts can be typed without submitting; priority 1 beats the managed
-  // textarea layer's input.submit binding on return.
-  useBindings(() => ({
-    target: inputTarget,
-    enabled:
-      vimEnabled() &&
-      inputTarget() !== undefined &&
-      !props.disabled &&
-      dialog.stack.length === 0 &&
-      store.mode !== "shell" &&
-      !auto()?.visible &&
-      vimMode() === "insert",
-    priority: 1,
-    bindings: [
-      {
-        key: "return",
-        desc: "Insert newline",
-        group: "Vim",
-        cmd: () => {
-          if (!input || input.isDestroyed) return false
-          input.insertText("\n")
-          return undefined
-        },
-      },
-    ],
-  }))
 
   let submitting = false
   async function submit() {
@@ -1568,17 +1389,6 @@ export function Prompt(props: PromptProps) {
     }
     numbers.set(cursorLine, cursorLine + 1)
     target.setLineNumbers(numbers)
-  })
-
-  // Block cursor in normal/visual modes, user-configured cursor in insert.
-  createEffect(() => {
-    const area = inputTarget()
-    if (!vimEnabled() || !area || area.isDestroyed) return
-    if (vimMode() === "insert") {
-      if (tuiConfig.cursor) area.cursorStyle = tuiConfig.cursor
-      return
-    }
-    area.cursorStyle = { style: "block", blinking: false }
   })
 
   const editorNode = (

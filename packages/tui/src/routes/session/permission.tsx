@@ -1,6 +1,6 @@
 import { createStore } from "solid-js/store"
 import { dirname } from "node:path"
-import { createMemo, For, Match, Show, Switch } from "solid-js"
+import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
 import { Portal, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTheme, selectedForeground } from "../../context/theme"
@@ -9,6 +9,8 @@ import { useSDK } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
 import { useSync } from "../../context/sync"
 import { useProject } from "../../context/project"
+import { useKV } from "../../context/kv"
+import { registerVimBindings } from "../../prompt/vim-bindings"
 import { filetype } from "../../util/filetype"
 import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
@@ -444,8 +446,17 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
   let input: TextareaRenderable
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
+  const kv = useKV()
   const dimensions = useTerminalDimensions()
   const narrow = createMemo(() => dimensions().width < 80)
+  const [rejectTarget, setRejectTarget] = createSignal<TextareaRenderable>()
+  const rejectVim = registerVimBindings({
+    target: rejectTarget,
+    initialEnabled: kv.get("vim_enabled", tuiConfig.vim),
+    onToggle: (next) => kv.set("vim_enabled", next),
+    cursor: tuiConfig.cursor,
+    onSubmit: () => props.onConfirm(input.plainText),
+  })
   useBindings(() => ({
     mode: OPENCODE_BASE_MODE,
     commands: [
@@ -502,6 +513,7 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
           ref={(val: TextareaRenderable) => {
             input = val
             val.traits = { status: "REJECT" }
+            setRejectTarget(val)
           }}
           focused
           textColor={theme.text}
@@ -510,6 +522,9 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
           cursorStyle={tuiConfig.cursor}
         />
         <box flexDirection="row" gap={2} flexShrink={0}>
+          <Show when={rejectVim.vimEnabled() && rejectVim.vimMode() !== "insert"}>
+            <text fg={theme.textMuted}>-- NORMAL --</text>
+          </Show>
           <text fg={theme.text}>
             enter <span style={{ fg: theme.textMuted }}>confirm</span>
           </text>

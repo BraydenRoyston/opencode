@@ -1275,3 +1275,81 @@ export function createPromptVim(options: {
     hardReset,
   }
 }
+
+export type VimSeed = { key: string; char: string }
+
+// Every printable stroke is bound so nothing leaks into the buffer in
+// normal/visual mode; the controller swallows unmapped keys (vim bell).
+// Multi-stroke semantics resolve inside the controller, so each binding is a
+// single stroke. Uppercase letters need the explicit shift+ form because a
+// bare "A" compiles case-insensitively and would shadow "a". Shifted symbols
+// are registered both bare and with shift+ since terminals disagree on
+// whether shifted punctuation reports the shift modifier.
+function buildSeeds(): VimSeed[] {
+  const seeds: VimSeed[] = []
+  for (const ch of "abcdefghijklmnopqrstuvwxyz") {
+    seeds.push({ key: ch, char: ch })
+    seeds.push({ key: `shift+${ch}`, char: ch.toUpperCase() })
+  }
+  for (const ch of "0123456789") seeds.push({ key: ch, char: ch })
+  for (const ch of "`~!@#$%^&*()-_=+[]{}\\|;:'\",.<>/?") {
+    seeds.push({ key: ch, char: ch })
+    if ('~!@#$%^&*()_+{}|:"<>?'.includes(ch)) seeds.push({ key: `shift+${ch}`, char: ch })
+  }
+  seeds.push({ key: "space", char: " " })
+  return seeds
+}
+
+export const VIM_SEEDS: VimSeed[] = buildSeeds()
+
+export const VIM_DESCS: Record<string, string> = {
+  h: "Vim: cursor left",
+  j: "Vim: cursor down",
+  k: "Vim: cursor up",
+  l: "Vim: cursor right",
+  w: "Vim: next word",
+  W: "Vim: next WORD",
+  b: "Vim: previous word",
+  B: "Vim: previous WORD",
+  e: "Vim: end of word",
+  E: "Vim: end of WORD",
+  "0": "Vim: line start",
+  $: "Vim: line end",
+  "^": "Vim: first non-blank",
+  G: "Vim: last line / goto line",
+  "%": "Vim: matching bracket",
+  "{": "Vim: previous paragraph",
+  "}": "Vim: next paragraph",
+  ";": "Vim: repeat find",
+  ",": "Vim: repeat find reversed",
+  f: "Vim: find char forward",
+  F: "Vim: find char backward",
+  t: "Vim: till char forward",
+  T: "Vim: till char backward",
+  g: "Vim: gg prefix",
+  d: "Vim: delete operator",
+  c: "Vim: change operator",
+  y: "Vim: yank operator",
+  r: "Vim: replace char",
+  x: "Vim: delete char under cursor",
+  X: "Vim: delete char before cursor",
+  s: "Vim: substitute char",
+  S: "Vim: substitute line",
+  D: "Vim: delete to line end",
+  C: "Vim: change to line end",
+  J: "Vim: join lines",
+  "~": "Vim: toggle case",
+  u: "Vim: undo",
+  p: "Vim: paste after",
+  P: "Vim: paste before",
+  o: "Vim: open line below",
+  O: "Vim: open line above",
+  i: "Vim: insert",
+  I: "Vim: insert at line start",
+  a: "Vim: append",
+  A: "Vim: append at line end",
+  v: "Vim: visual mode",
+  V: "Vim: visual line mode",
+  ".": "Vim: repeat last change",
+  "ctrl+r": "Vim: redo",
+}
