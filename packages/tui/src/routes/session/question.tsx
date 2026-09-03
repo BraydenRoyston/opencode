@@ -7,6 +7,8 @@ import type { QuestionAnswer, QuestionRequest } from "@opencode-ai/sdk/v2"
 import { useSDK } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
+import { useKV } from "../../context/kv"
+import { registerVimBindings } from "../../prompt/vim-bindings"
 import { useBindings, useOpencodeModeStack } from "../../keymap"
 
 const QUESTION_MODE = "question"
@@ -16,6 +18,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   const { theme } = useTheme()
   const renderer = useRenderer()
   const tuiConfig = useTuiConfig()
+  const kv = useKV()
   const modeStack = useOpencodeModeStack()
 
   const questions = createMemo(() => props.request.questions)
@@ -130,6 +133,57 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
     onCleanup(popMode)
   })
 
+  function commitEdit() {
+    const text = textarea?.plainText?.trim() ?? ""
+    const prev = store.custom[store.tab]
+
+    if (!text) {
+      if (prev) {
+        const inputs = [...store.custom]
+        inputs[store.tab] = ""
+        setStore("custom", inputs)
+
+        const answers = [...store.answers]
+        answers[store.tab] = (answers[store.tab] ?? []).filter((x) => x !== prev)
+        setStore("answers", answers)
+      }
+      setStore("editing", false)
+      return
+    }
+
+    if (multi()) {
+      const inputs = [...store.custom]
+      inputs[store.tab] = text
+      setStore("custom", inputs)
+
+      const existing = store.answers[store.tab] ?? []
+      const next = [...existing]
+      if (prev) {
+        const index = next.indexOf(prev)
+        if (index !== -1) next.splice(index, 1)
+      }
+      if (!next.includes(text)) next.push(text)
+      const answers = [...store.answers]
+      answers[store.tab] = next
+      setStore("answers", answers)
+      setStore("editing", false)
+      return
+    }
+
+    pick(text, true)
+    setStore("editing", false)
+  }
+
+  const [answerTarget, setAnswerTarget] = createSignal<TextareaRenderable>()
+  const answerVim = registerVimBindings({
+    target: answerTarget,
+    guard: () => store.editing && !confirm(),
+    initialEnabled: kv.get("vim_enabled", tuiConfig.vim),
+    onToggle: (next) => kv.set("vim_enabled", next),
+    cursor: tuiConfig.cursor,
+    onSubmit: commitEdit,
+  })
+
   useBindings(() => ({
     mode: QUESTION_MODE,
     enabled: store.editing && !confirm(),
@@ -162,46 +216,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
         key: "return",
         desc: "Submit answer edit",
         group: "Question",
-        cmd: () => {
-          const text = textarea?.plainText?.trim() ?? ""
-          const prev = store.custom[store.tab]
-
-          if (!text) {
-            if (prev) {
-              const inputs = [...store.custom]
-              inputs[store.tab] = ""
-              setStore("custom", inputs)
-
-              const answers = [...store.answers]
-              answers[store.tab] = (answers[store.tab] ?? []).filter((x) => x !== prev)
-              setStore("answers", answers)
-            }
-            setStore("editing", false)
-            return
-          }
-
-          if (multi()) {
-            const inputs = [...store.custom]
-            inputs[store.tab] = text
-            setStore("custom", inputs)
-
-            const existing = store.answers[store.tab] ?? []
-            const next = [...existing]
-            if (prev) {
-              const index = next.indexOf(prev)
-              if (index !== -1) next.splice(index, 1)
-            }
-            if (!next.includes(text)) next.push(text)
-            const answers = [...store.answers]
-            answers[store.tab] = next
-            setStore("answers", answers)
-            setStore("editing", false)
-            return
-          }
-
-          pick(text, true)
-          setStore("editing", false)
-        },
+        cmd: commitEdit,
       },
     ],
   }))
@@ -428,6 +443,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                         ref={(val: TextareaRenderable) => {
                           textarea = val
                           val.traits = { status: "ANSWER" }
+                          setAnswerTarget(val)
                           queueMicrotask(() => {
                             val.focus()
                             val.gotoLineEnd()
@@ -492,6 +508,9 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
             <text fg={theme.text}>
               {"⇆"} <span style={{ fg: theme.textMuted }}>tab</span>
             </text>
+          </Show>
+          <Show when={answerVim.vimEnabled() && answerVim.vimMode() !== "insert"}>
+            <text fg={theme.textMuted}>-- NORMAL --</text>
           </Show>
           <Show when={!confirm()}>
             <text fg={theme.text}>
